@@ -1,7 +1,7 @@
 
 
 data_path<- "/home/nmolto/Desktop/rMSI2_Nadia/Dataset"
-rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"merged-peakmatrix.pkmat"))
+rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"tiroides_roger.pkmat"))
 
 AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
 
@@ -11,12 +11,11 @@ params$peakAnnotation$adductElementsTable <- as.data.frame()
 
 MetaboCoreUtils::adducts(polarity="negative")
 
-possible_adducts <- params$peakAnnotation$adductElementsTable 
 ## rMSI2 aductes negatius
 
 negative_adducts<- data.frame(
   name = c("Cl-", "Br-", "-H"),
-  mass = c(34.969402, 78.918885, -1.007276),
+  mass = c(-34.969402, -78.918885, -1.007276),
   priority = c(0, 0, 0))
 
 negative_adducts<-rbind(addduct_tables_neg[[2]], addduct_tables_neg[[3]])
@@ -133,52 +132,7 @@ new_annotations <- new_annotations[all_columns]
 
 annotation_df_expanded <- rbind(annotation_df_expanded, new_annotations)
 
-
-###Probabilitats  per Kernel Density Estimation (KDE) 
-
-# Filtrar niveles A y B
-annotation_A_B <- annotation_df_expanded %>%
-  filter(Level %in% c("A", "B"))
-
-# Calcular la densidad para cada aducto
-density_models <- annotation_A_B %>%
-  group_by(PutativeAdduct) %>%
-  summarise(density = list(density(NeutralMass, na.rm = TRUE)))
-
-# Función para obtener la densidad
-get_density_value <- function(mass, density_model) {
-  if (is.null(density_model) || length(density_model$x) < 2) {
-    return(NA)  # Devuelve NA si no hay datos suficientes para la densidad
-  }
-  approx(density_model$x, density_model$y, xout = mass, rule = 2)$y
-}
-
-# Filtrar niveles C y D
-annotation_C_D <- annotation_df_expanded %>%
-  filter(Level %in% c("C", "D"))
-
-# Calcular las probabilidades basadas en la densidad para cada aducto
-annotation_C_D <- annotation_C_D %>%
-  rowwise() %>%
-  mutate(Probability = {
-    adduct_density <- density_models$density[match(PutativeAdduct, density_models$PutativeAdduct)]
-    prob <- get_density_value(MonoisotopicMass, adduct_density[[1]])
-    if (is.na(prob)) {
-      warning(paste("No se pudo calcular la probabilidad para la masa:", MonoisotopicMass, "y el aducto:", PutativeAdduct))
-    }
-    prob
-  }) %>%
-  ungroup()
-
-# Combinar los resultados con el dataframe original
-annotation_df_expanded_v2 <- annotation_df_expanded %>%
-  filter(!Level %in% c("C", "D")) %>%
-  bind_rows(annotation_C_D)
-
-####Opcio B incloent la massa
-
-
-
+#Calcul de probabilitats 
 
 
 library(dplyr)
