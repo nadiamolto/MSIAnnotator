@@ -1,5 +1,10 @@
 
 
+
+library(dplyr)
+library(usethis)
+library(roxygen2)
+
 data_path<- "/home/nmolto/Desktop/rMSI2_Nadia/Dataset"
 rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"tiroides_roger.pkmat"))
 
@@ -32,9 +37,12 @@ params<-rMSI2::ProcessingParameters()
 params$peakAnnotation$ppmMassTolerance<-15
 NH4<- data.frame(name="+NH4", mass=18.033823, priority=0)
 params$peakAnnotation$adductElementsTable<- rbind(params$peakAnnotation$adductElementsTable,NH4)
+
+adducts_C_df <- params$peakAnnotation$adductElementsTable
+
 aductes <- rMSI2::peakAnnotation(rMSIprocPeakMatrix, params=params)
 
-#format
+#dataframe format from rMSI2 output
 
 process_peak <- function(peak_id) {
   adducts_A <- aductes$A[aductes$A$Adduct1Index == peak_id | aductes$A$Adduct2Index == peak_id,]
@@ -55,25 +63,19 @@ process_peak <- function(peak_id) {
 
 annotation_mat <- lapply(seq_along(rMSIprocPeakMatrix$mass), process_peak)
 annotation_df <- do.call(rbind, annotation_mat)
-
-
 annotation_df <- annotation_df[!duplicated(annotation_df), ]
 
-
-adducts_C_df <- data.frame(
-  name = c("+K", "+Na", "+H", "+NH4"),
-  mass = c(38.96, 22.99, 1.01, 18.03),
-  priority = c(0, 0, 0, 0)
-)
-
+#separate rows for each adduct and include the monoisotopic mass
 expand_adducts <- function(df, adducts_C_df) {
   df_expanded <- do.call(rbind, lapply(seq_len(nrow(df)), function(i) {
     row <- df[i, ]
     if (row$Level %in% c("A", "B")) {
       adduct_pairs <- unlist(strsplit(as.character(row$Adducts), " & "))
-      expanded_rows <- lapply(adduct_pairs, function(adduct) {
+      adduct_masses <- c(row$Adduct1Mass, row$Adduct2Mass)
+      expanded_rows <- lapply(seq_along(adduct_pairs), function(j) {
         new_row <- row
-        new_row$PutativeAdduct <- adduct
+        new_row$PutativeAdduct <- adduct_pairs[j]
+        new_row$MonoisotopicMass <- adduct_masses[j]
         return(new_row)
       })
       return(do.call(rbind, expanded_rows))
@@ -90,15 +92,16 @@ expand_adducts <- function(df, adducts_C_df) {
 }
 
 annotation_df_expanded <- expand_adducts(annotation_df, adducts_C_df)
-
 annotation_df_expanded <- annotation_df_expanded[!duplicated(annotation_df_expanded), ]
 
+#Order columns
 column_order <- c("PutativeAdduct", "Level", setdiff(names(annotation_df_expanded), c("PutativeAdduct", "Level")))
 annotation_df_expanded <- annotation_df_expanded[, column_order]
 
-#Fins aquí m'assigna al nivell C tots els aductes de la taula
+#All the adducts selected to analyse have been included as C level in those monoisotopic masses identified as C level
+#This masses do not have assigned adducts.
 
-## Masses faltants de la peakmatrix
+## D level:
 
 new_masses <- rMSIprocPeakMatrix$mass
 
@@ -137,72 +140,75 @@ annotation_df_expanded <- rbind(annotation_df_expanded, new_annotations)
 
 library(dplyr)
 
-# Filtrar niveles A y B
+#Filtrar A i B
 annotation_A_B <- annotation_df_expanded %>%
   filter(Level %in% c("A", "B"))
 
-# Calcular la densidad para cada aducto usando NeutralMass
+# Calcular la densitat per aducte i massa neutra en A i B
 density_models <- annotation_A_B %>%
   group_by(PutativeAdduct) %>%
   summarise(density = list(density(NeutralMass, na.rm = TRUE)), .groups = 'drop')
 
-# Función para obtener la densidad
+# Funció densitat 
 get_density_value <- function(mass, density_model) {
   if (is.null(density_model) || length(density_model$x) < 2) {
-    return(NA)  # Devuelve NA si no hay datos suficientes para la densidad
+    return(NA)  # NA si no hi ha suficients dades
   }
   approx(density_model$x, density_model$y, xout = mass, rule = 2)$y
 }
 
-# Filtrar niveles C y D
+# Filtrar C i D
 annotation_C_D <- annotation_df_expanded %>%
   filter(Level %in% c("C", "D"))
 
-# Calcular las probabilidades basadas en la densidad para cada aducto en los niveles C y D
+# Càlcul pb per a C i D
 annotation_C_D <- annotation_C_D %>%
   rowwise() %>%
   mutate(Probability = {
     adduct_name <- gsub("\\[M\\+", "", PutativeAdduct)  # Extraer el nombre del aducto
     adduct_name <- gsub("\\]", "", adduct_name)  # Eliminar el corchete de cierre
     
-    # Encontrar la masa del aducto correspondiente
+    # Filtrar massa del aducte
     adduct_mass <- params$peakAnnotation$adductElementsTable$mass[
       params$peakAnnotation$adductElementsTable$name == paste0("+", adduct_name)
     ]
     
-    # Si no se encuentra la masa del aducto, emitir una advertencia y continuar
     if (length(adduct_mass) == 0) {
       warning(paste("No se encontró masa para el aducto:", PutativeAdduct))
       return(NA)
     }
     
-    # Calcular la masa combinada
+    # Càlcul massa d'aducte
     combined_mass <- MonoisotopicMass + adduct_mass
     
-    # Obtener el modelo de densidad para el aducto
+    # Valor densitat
     adduct_density <- density_models$density[match(PutativeAdduct, density_models$PutativeAdduct)]
     
-    # Si no se encuentra el modelo de densidad, emitir una advertencia y continuar
     if (length(adduct_density) == 0) {
       warning(paste("No se encontró modelo de densidad para el aducto:", PutativeAdduct))
       return(NA)
     }
     
-    # Calcular la probabilidad de densidad para la masa combinada
+    # Calcular pb
     prob <- get_density_value(combined_mass, adduct_density[[1]])
     
-    # Devolver la probabilidad o NA si no se pudo calcular
     prob
   }) %>%
   ungroup()
 
-# Combinar los resultados con el dataframe original sin modificar A y B
+# Combinar
 annotation_df_expanded_v3 <- annotation_df_expanded %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)
 
 
+##Anotar databases
 
+
+
+db <- read.csv("/home/nmolto/Desktop/rMSI2_Nadia/PubChemLite_31Oct2020.csv")
+
+match_anotation <- anotation_df_expanded_v3 %>% filter(MonoisotopicMAss %in% db)
 
 ###################ADUCTES
 
