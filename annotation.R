@@ -1,9 +1,42 @@
 
-
+##pakages:
 
 library(dplyr)
 library(usethis)
 library(roxygen2)
+
+if ((params$peakAnnotation$isotopeLikelihoodScoreThreshold > 1) || (params$peakAnnotation$isotopeLikelihoodScoreThreshold < 0))
+{
+  stop("Error: isotopeLikelihoodScoreThreshold in the ProcParams object must be between 0 and 1")
+}
+
+if((params$peakAnnotation$ppmMassTolerance>100))
+{
+  writeLines("Mass tolerances close or bigger than 100 ppms may produce wrong annotations.")
+}
+
+if (!require("rMSI2", character.only = TRUE, quietly=TRUE)) {
+  devtools::install_github("https://github.com/prafols/rMSI2.git", dependencies = TRUE)
+  library(rMSI2)
+}
+
+if (!require("SummarizedExperiment", quietly = TRUE)){
+  install.packages("BiocManager")
+  library(BiocManager)
+  BiocManager::install("SummarizedExperiment")
+  library(SummarizedExperiment)
+}
+if (!require("HDF5Array", character.only = TRUE)) {
+  BiocManager::install("HDF5Array")
+  library(HDF5Array)
+}
+
+if (!require("dplyr", character.only = TRUE, quietly=TRUE)) {
+  install.packages("dplyr")
+  library(dplyr)
+}
+
+#setup
 
 data_path<- "/home/nmolto/Desktop/rMSI2_Nadia/Dataset"
 rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"tiroides_roger.pkmat"))
@@ -26,8 +59,8 @@ negative_adducts<- data.frame(
 negative_adducts<-rbind(addduct_tables_neg[[2]], addduct_tables_neg[[3]])
 params$peakAnnotation$adductElementsTable <- negative_adducts
 params$peakAnnotation$ppmMassTolerance<-14
-result<-rMSI2:::isotopeAnnotation(rMSIprocPeakMatrix, params)
 aductes <- rMSI2::peakAnnotation(rMSIprocPeakMatrix, params=params)
+params$peakAnnotation$isotopeLikelihoodScoreThreshold<- 0.6
 
 
 ## MSIAnnotator
@@ -98,17 +131,82 @@ annotation_df_expanded <- annotation_df_expanded[!duplicated(annotation_df_expan
 column_order <- c("PutativeAdduct", "Level", setdiff(names(annotation_df_expanded), c("PutativeAdduct", "Level")))
 annotation_df_expanded <- annotation_df_expanded[, column_order]
 
-#All the adducts selected to analyse have been included as C level in those monoisotopic masses identified as C level
-#This masses do not have assigned adducts.
+#Every mass in C level will be assessed considering all the adducts included in the initial element table
+#C level are M+0 excluded in A or B levels
 
-## D level:
+##D level:
+#Rules:
+#Isotopes with a treshold upper than the selected excluded
+#masses in A, B and C levels excluded
 
-new_masses <- rMSIprocPeakMatrix$mass
+#ISOTOPE ANOTATION FOR FILTERING:
 
-missing_masses <- new_masses[!new_masses %in% annotation_df_expanded$MonoisotopicMass]
+isotopes<-rMSI2:::isotopeAnnotation(rMSIprocPeakMatrix, params)
+
+#Isotopes in dataframe format:
+
+result2<-isotopes[names(result) != "isotopicPeaks"] 
+result2<-result2[names(result2) != "monoisotopicPeaks"] 
+
+list_df<- vector("list",length(result2)) 
+names(list_df) <- names(result2)
+
+for(m in seq_along(result2)) { #recorrer índice de num. de M
+  Mx<- result2[[m]] # filtro los valores de M0 cada nivel anotado (M+1, M+1,...)
+  param_names<-c("mz_MN","abs_ppm_error", "M0_index","MN_index", "total_score", "morphology_score","intensity_score","mass_error_score","isotopic_ratio","C_atoms")
+  mz_values<-names(Mx) #Todos los M0 de cada nivel isotopico anotado
+  mat<- matrix(nrow=length(param_names), ncol=length(mz_values))
+  rownames(mat)<-param_names
+  colnames(mat)<-mz_values
+  
+  for(mz in seq_along(Mx)) {#indice de cada feature en M
+    #isotope_data<-numeric(length(param_names))
+    isotope_data<-unname(unlist(Mx[mz]))
+    #print(isotope_data)
+    mat[,mz]<-isotope_data
+  }
+  df<-as.data.frame(t(mat))
+  list_df[[m]]<-df
+}
+dfs<-list()
+df_names <- c()
+for (level in names(list_df)) {
+  df_name <- paste0("level_", level)
+  #assign(df_name, list_df[[level]], envir = .GlobalEnv) eliminat per modificar l'entorn de treball global
+  dfs[[df_name]]<-list_df[[level]]
+  df_names<- c(df_names,df_name) #llista de dataframes amb cada nivell isotòpic
+  
+}
+
+for (df_name in df_names){
+  dfs[[df_name]]$isotope_level <- df_name
+}
+
+df_unico<- do.call(rbind, dfs) #dataframe que inclou el nivell isotòpic
+df_unico$mz_M0<- rMSIprocPeakMatrix$mass[df_unico$M0_index]
+df_unico$mz_MN<- rMSIprocPeakMatrix$mass[df_unico$MN_index]
+isotopes_df_format <- df_unico[, c(12,1,11,3,4,5,2,6,7,8,9,10)]
+
+isotopes_mass_vector <-rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks]
+isotopes_df_format$scoretreshold<- ifelse(isotopes_df_format$mz_MN %in% mass_vector, "YES", "NO")
+
+
+#FILTERING FOR D GROUP:
+
+all_masses_rounded <-round(rMSIprocPeakMatrix$mass, digits=4)
+
+isotopic_peaks_th<- round(rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks], digits=4)
+
+
+#Filtering masses annotated in the adduct annotation step and isotopes:
+monoisotopic_masses <- round(annotation_df_expanded$MonoisotopicMass, digits=4)
+all_masses_rounded <- round(all_masses, digits=4)
+masses_without_adducts <- all_masses_rounded[!all_masses_rounded %in% monoisotopic_masses]
+masses_without_adducts_isotopes<- masses_without_adducts[!masses_without_adducts %in% isotopic_peaks_th]
+
+
 
 adduct_elements <- params$peakAnnotation$adductElementsTable
-
 all_columns <- names(annotation_df_expanded)
 new_annotations <- data.frame(matrix(ncol = length(all_columns), nrow = 0))
 colnames(new_annotations) <- all_columns
@@ -134,6 +232,12 @@ for (col in all_columns) {
 new_annotations <- new_annotations[all_columns]
 
 annotation_df_expanded <- rbind(annotation_df_expanded, new_annotations)
+
+
+
+
+
+
 
 #Calcul de probabilitats 
 
@@ -218,4 +322,3 @@ MetaboCoreUtils::adducts(polarity = c("positive","negative"))
 #####Database
 
 cmpdb <- CompDb(all_minus_CompDb.sqlite)
-
