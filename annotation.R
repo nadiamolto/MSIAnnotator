@@ -38,8 +38,8 @@ if (!require("dplyr", character.only = TRUE, quietly=TRUE)) {
 
 #setup
 
-data_path<- "/home/nmolto/Desktop/rMSI2_Nadia/Dataset"
-rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"tiroides_roger.pkmat"))
+data_path<- "~/Desktop/datasets"
+rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"HCCA_DEA_pos_cerebellum.pkmat"))
 
 AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
 
@@ -69,7 +69,9 @@ params$peakAnnotation$isotopeLikelihoodScoreThreshold<- 0.6
 params<-rMSI2::ProcessingParameters()
 params$peakAnnotation$ppmMassTolerance<-15
 NH4<- data.frame(name="+NH4", mass=18.033823, priority=0)
-params$peakAnnotation$adductElementsTable<- rbind(params$peakAnnotation$adductElementsTable,NH4)
+Na2_H<- data.frame(name="+2Na-H", mass=44.971164, priority=0)
+K2_H<-data.frame(name="+2K-H", mass=76.919044, priority=0)
+params$peakAnnotation$adductElementsTable<- rbind(params$peakAnnotation$adductElementsTable,NH4,Na2_H,K2_H)
 
 adducts_C_df <- params$peakAnnotation$adductElementsTable
 
@@ -96,7 +98,8 @@ process_peak <- function(peak_id) {
 
 annotation_mat <- lapply(seq_along(rMSIprocPeakMatrix$mass), process_peak)
 annotation_df <- do.call(rbind, annotation_mat)
-annotation_df <- annotation_df[!duplicated(annotation_df), ]
+annotation_df <- annotation_df[!duplicated(annotation_df), ] #As we are filtering by adduct1 and adduct2 index, rows are duplicated
+
 
 #separate rows for each adduct and include the monoisotopic mass
 expand_adducts <- function(df, adducts_C_df) {
@@ -108,7 +111,6 @@ expand_adducts <- function(df, adducts_C_df) {
       expanded_rows <- lapply(seq_along(adduct_pairs), function(j) {
         new_row <- row
         new_row$PutativeAdduct <- adduct_pairs[j]
-        new_row$MonoisotopicMass <- adduct_masses[j]
         return(new_row)
       })
       return(do.call(rbind, expanded_rows))
@@ -126,6 +128,24 @@ expand_adducts <- function(df, adducts_C_df) {
 
 annotation_df_expanded <- expand_adducts(annotation_df, adducts_C_df)
 annotation_df_expanded <- annotation_df_expanded[!duplicated(annotation_df_expanded), ]
+
+#Calculate the neutral mass for group C:
+
+# Extract adduct name
+annotation_df_expanded <- annotation_df_expanded %>%
+  mutate(AdductName = gsub("\\[M(\\+.*)\\]", "\\1", PutativeAdduct))
+
+# Join with adduct table
+annotation_df_expanded <- annotation_df_expanded %>%
+  left_join(adducts_C_df, by = c("AdductName" = "name"))
+
+# Calculate neutral mass
+annotation_df_expanded <- annotation_df_expanded %>%
+  mutate(NeutralMass = ifelse(Level == "C", MonoisotopicMass - mass, NeutralMass))
+
+# Remove columns
+annotation_df_expanded <- annotation_df_expanded %>%
+  select(-AdductName, -mass, -priority)
 
 #Order columns
 column_order <- c("PutativeAdduct", "Level", setdiff(names(annotation_df_expanded), c("PutativeAdduct", "Level")))
@@ -145,7 +165,7 @@ isotopes<-rMSI2:::isotopeAnnotation(rMSIprocPeakMatrix, params)
 
 #Isotopes in dataframe format:
 
-result2<-isotopes[names(result) != "isotopicPeaks"] 
+result2<-isotopes[names(isotopes) != "isotopicPeaks"] 
 result2<-result2[names(result2) != "monoisotopicPeaks"] 
 
 list_df<- vector("list",length(result2)) 
@@ -188,35 +208,33 @@ df_unico$mz_MN<- rMSIprocPeakMatrix$mass[df_unico$MN_index]
 isotopes_df_format <- df_unico[, c(12,1,11,3,4,5,2,6,7,8,9,10)]
 
 isotopes_mass_vector <-rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks]
-isotopes_df_format$scoretreshold<- ifelse(isotopes_df_format$mz_MN %in% mass_vector, "YES", "NO")
+isotopes_df_format$scoretreshold<- ifelse(isotopes_df_format$mz_MN %in% isotopes_mass_vector, "YES", "NO")
 
 
 #FILTERING FOR D GROUP:
 
-all_masses_rounded <-round(rMSIprocPeakMatrix$mass, digits=4)
+all_masses <-rMSIprocPeakMatrix$mass
 
-isotopic_peaks_th<- round(rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks], digits=4)
+isotopic_peaks_th<- rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks]
 
-
-#Filtering masses annotated in the adduct annotation step and isotopes:
-monoisotopic_masses <- round(annotation_df_expanded$MonoisotopicMass, digits=4)
-all_masses_rounded <- round(all_masses, digits=4)
-masses_without_adducts <- all_masses_rounded[!all_masses_rounded %in% monoisotopic_masses]
+monoisotopic_masses <- rMSIprocPeakMatrix$mass[isotopes$monoisotopicPeaks]
+masses_without_adducts <- all_masses[!all_masses %in% monoisotopic_masses]
 masses_without_adducts_isotopes<- masses_without_adducts[!masses_without_adducts %in% isotopic_peaks_th]
+masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes[!masses_without_adducts_isotopes%in% rMSIprocPeakMatrix$mass[aductes$B$Adduct1Index]] #removing group B mz
+masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes_b[!masses_without_adducts_isotopes_b%in% rMSIprocPeakMatrix$mass[aductes$B$Adduct2Index]]
 
+#Adding D group:
 
-
-adduct_elements <- params$peakAnnotation$adductElementsTable
 all_columns <- names(annotation_df_expanded)
 new_annotations <- data.frame(matrix(ncol = length(all_columns), nrow = 0))
 colnames(new_annotations) <- all_columns
 
-for (mass in missing_masses) {
-  for (i in 1:nrow(adduct_elements)) {
+for (mass in masses_without_adducts_isotopes_b) {
+  for (i in 1:nrow(adducts_C_df)) {
     new_row <- data.frame(
       Level = "D",
       MonoisotopicMass = mass,
-      PutativeAdduct = paste0("[M", adduct_elements$name[i], "]"),
+      PutativeAdduct = paste0("[M", adducts_C_df$name[i], "]"),
       stringsAsFactors = FALSE
     )
     new_annotations <- rbind(new_annotations, new_row)
@@ -231,29 +249,36 @@ for (col in all_columns) {
 
 new_annotations <- new_annotations[all_columns]
 
-annotation_df_expanded <- rbind(annotation_df_expanded, new_annotations)
+annotation_df_expanded_D <- rbind(annotation_df_expanded, new_annotations)
+
+#Calculate the neutral mass for group D:
+# Extract adduct name
+annotation_df_expanded_D <- annotation_df_expanded_D %>%
+  mutate(AdductName = gsub("\\[M(\\+.*)\\]", "\\1", PutativeAdduct))
+# Join with adduct table
+annotation_df_expanded_D <- annotation_df_expanded_D %>%
+  left_join(adducts_C_df, by = c("AdductName" = "name"))
+# Calculate neutral mass
+annotation_df_expanded <- annotation_df_expanded_D %>%
+  mutate(NeutralMass = ifelse(Level == "C", MonoisotopicMass - mass, NeutralMass))
+# Remove columns
+annotation_df_expanded_D <- annotation_df_expanded_D %>%
+  select(-AdductName, -mass, -priority)
 
 
 
 
+#Probabilities as score for filtering adducts
 
 
-
-#Calcul de probabilitats 
-
-
-library(dplyr)
-
-#Filtrar A i B
-annotation_A_B <- annotation_df_expanded %>%
+#Filtering A, B:
+annotation_A_B <- annotation_df_expanded_D %>%
   filter(Level %in% c("A", "B"))
 
-# Calcular la densitat per aducte i massa neutra en A i B
+# Density function
 density_models <- annotation_A_B %>%
-  group_by(PutativeAdduct) %>%
-  summarise(density = list(density(NeutralMass, na.rm = TRUE)), .groups = 'drop')
+  group_by(PutativeAdduct) %>% summarise(density = list(density(NeutralMass, na.rm = TRUE)), .groups = 'drop')
 
-# Funció densitat 
 get_density_value <- function(mass, density_model) {
   if (is.null(density_model) || length(density_model$x) < 2) {
     return(NA)  # NA si no hi ha suficients dades
@@ -261,18 +286,18 @@ get_density_value <- function(mass, density_model) {
   approx(density_model$x, density_model$y, xout = mass, rule = 2)$y
 }
 
-# Filtrar C i D
-annotation_C_D <- annotation_df_expanded %>%
+# Filtering C, D
+annotation_C_D <- annotation_df_expanded_D %>%
   filter(Level %in% c("C", "D"))
 
-# Càlcul pb per a C i D
+# Probability for C, D:
 annotation_C_D <- annotation_C_D %>%
   rowwise() %>%
   mutate(Probability = {
-    adduct_name <- gsub("\\[M\\+", "", PutativeAdduct)  # Extraer el nombre del aducto
-    adduct_name <- gsub("\\]", "", adduct_name)  # Eliminar el corchete de cierre
+    adduct_name <- gsub("\\[M\\+", "", PutativeAdduct)
+    adduct_name <- gsub("\\]", "", adduct_name)
     
-    # Filtrar massa del aducte
+    # Filtering masses:
     adduct_mass <- params$peakAnnotation$adductElementsTable$mass[
       params$peakAnnotation$adductElementsTable$name == paste0("+", adduct_name)
     ]
@@ -282,10 +307,6 @@ annotation_C_D <- annotation_C_D %>%
       return(NA)
     }
     
-    # Càlcul massa d'aducte
-    combined_mass <- MonoisotopicMass + adduct_mass
-    
-    # Valor densitat
     adduct_density <- density_models$density[match(PutativeAdduct, density_models$PutativeAdduct)]
     
     if (length(adduct_density) == 0) {
@@ -293,15 +314,23 @@ annotation_C_D <- annotation_C_D %>%
       return(NA)
     }
     
-    # Calcular pb
-    prob <- get_density_value(combined_mass, adduct_density[[1]])
+    # probability
+    prob <- get_density_value(NeutralMass, adduct_density[[1]])
     
     prob
   }) %>%
   ungroup()
 
+#Normalization
+
+annotation_C_D <- annotation_C_D %>%
+  group_by(MonoisotopicMass) %>%
+  mutate(NormalizedProbability = Probability / sum(Probability, na.rm = TRUE)) %>%
+  ungroup()
+
+
 # Combinar
-annotation_df_expanded_v3 <- annotation_df_expanded %>%
+annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)
 
@@ -321,4 +350,17 @@ MetaboCoreUtils::adducts(polarity = c("positive","negative"))
 
 #####Database
 
-cmpdb <- CompDb(all_minus_CompDb.sqlite)
+match_annotation_1 <- merge(annotation_df_expanded_v3, MS1_2ID, by.x = "NeutralMass", by.y="MonoisotopicMass")
+match_annotation_1 <- match_annotation_1[, c("MonoisotopicMass", "PutativeAdduct", "Level", 
+                                             "NeutralMass", "ILS", "EstimatedCarbonAtoms", 
+                                             "NormalizedProbability", colnames(MS1_2ID)[-which(colnames(MS1_2ID) == "MonoisotopicMass")])]
+
+
+match_annotation_2 <- merge(annotation_df_expanded_v3, Merge_LipidMaps_LipidBlast, by.x = "MonoisotopicMass", by.y="MASS")
+match_annotation_2 <- match_annotation_2[, c("MonoisotopicMass", "PutativeAdduct", "Level", 
+                                             "NeutralMass", "ILS", "EstimatedCarbonAtoms", 
+                                             "NormalizedProbability", colnames(Merge_LipidMaps_LipidBlast)[-which(colnames(Merge_LipidMaps_LipidBlast) == "MASS")])]
+
+
+write.csv(match_annotation_1, "C:/Users/nadia/OneDrive/Escritorio/PROVA_PACKAGE/anotacio_v1.csv")
+
