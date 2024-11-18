@@ -259,7 +259,7 @@ annotation_df_expanded_D <- annotation_df_expanded_D %>%
 annotation_df_expanded_D <- annotation_df_expanded_D %>%
   left_join(adducts_C_df, by = c("AdductName" = "name"))
 # Calculate neutral mass
-annotation_df_expanded <- annotation_df_expanded_D %>%
+annotation_df_expanded_D <- annotation_df_expanded_D %>%
   mutate(NeutralMass = ifelse(Level == "D", MonoisotopicMass - mass, NeutralMass))
 # Remove columns
 annotation_df_expanded_D <- annotation_df_expanded_D %>%
@@ -334,6 +334,9 @@ annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)
 
+#Remove rows with negative values in NeutralMass
+annotation_df_expanded_vf <- annotation_df_expanded_vf %>%
+  filter(NeutralMass >= 0)
 
 ##Anotar databases
 
