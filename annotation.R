@@ -1,9 +1,11 @@
-
-##pakages:
-
 library(dplyr)
 library(usethis)
 library(roxygen2)
+library(readr)
+library(data.table)
+library(purrr)
+library(tidyr)
+library(ggplot2)
 
 if ((params$peakAnnotation$isotopeLikelihoodScoreThreshold > 1) || (params$peakAnnotation$isotopeLikelihoodScoreThreshold < 0))
 {
@@ -38,10 +40,10 @@ if (!require("dplyr", character.only = TRUE, quietly=TRUE)) {
 
 #setup
 
-data_path<- "~/Desktop/datasets"
+data_path<- ""
 rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"HCCA_DEA_pos_cerebellum.pkmat"))
 
-AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
+#AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
 
 params<-rMSI2::ProcessingParameters()
 
@@ -61,6 +63,7 @@ params$peakAnnotation$adductElementsTable <- negative_adducts
 params$peakAnnotation$ppmMassTolerance<-14
 aductes <- rMSI2::peakAnnotation(rMSIprocPeakMatrix, params=params)
 params$peakAnnotation$isotopeLikelihoodScoreThreshold<- 0.6
+
 
 
 ## MSIAnnotator
@@ -265,9 +268,8 @@ annotation_df_expanded_D <- annotation_df_expanded_D %>%
 annotation_df_expanded_D <- annotation_df_expanded_D %>%
   select(-AdductName, -mass, -priority)
 
-
 #Remove rows with negative values in NeutralMass
-annotation_df_expanded_vf <- annotation_df_expanded_vf %>%
+annotation_df_expanded_D <- annotation_df_expanded_D %>%
   filter(NeutralMass >= 0)
 
 
@@ -327,40 +329,62 @@ annotation_C_D <- annotation_C_D %>%
 
 #Normalization
 
-total_probability <- sum(annotation_C_D$Probability, na.rm = TRUE)
+total_probability <- sum(annotation_C_D$Probability, na.rm = TRUE)  # Suma de todas las probabilidades
 
 annotation_C_D <- annotation_C_D %>%
-  mutate(NormalizedProbability = Probability / total_probability)
+  mutate(NormalizedProbability = Probability / total_probability)  # Normalizar por la suma total
 
 # Combinar
 annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
-  bind_rows(annotation_C_D)
+  bind_rows(annotation_C_D)   #OBJECTE FINAL
+
+
+##density plot 
+
+density_model_repr <- density_models %>%
+  mutate(
+    x = map(density, ~ .x$x), 
+    y = map(density, ~ .x$y)   
+  ) %>%
+  select(-density) %>%         
+  unnest(cols = c(x, y))        
+
+
+ggplot(density_model_repr, aes(x = x, y = y, color = PutativeAdduct)) +
+  geom_line(linewidth = 1) +  # Representar líneas de densidad
+  labs(
+    title = "Density function for each adduct based on A and B levels",
+    x = "NeutralMass",
+    y = "Density of probabilities",
+    color = "PutativeAdduct"
+  ) +
+  theme_minimal()
 
 
 
 ##Anotar databases
 
 
-MS1_2ID <- read.csv("/home/nmolto/Desktop/rMSI2_Nadia/PubChemLite_31Oct2020.csv")
+MS1_2ID <- read.csv("MS1_2ID.csv")
 
-# Calcular los límites inferior y superior con un intervalo de ±1 ppm
+# limits 5 ppm
 annotation_df_expanded_vf_a <- annotation_df_expanded_vf %>%
-  mutate(LowerMass = NeutralMass * (1- 5e-6),
+  mutate(LowerMass = NeutralMass * (1 - 5e-6),
          UpperMass = NeutralMass * (1 + 5e-6))
 
-# Convertir los dataframes a data.table
+#data.table format
 setDT(annotation_df_expanded_vf_a)
 setDT(MS1_2ID)
 
-# Añadir columnas de inicio y fin en MS1_2ID para la coincidencia
+# columns in db
 MS1_2ID[, `:=`(Start = MonoisotopicMass, End = MonoisotopicMass)]
 
-# Establecer claves para los data.tables
+# set keys
 setkey(annotation_df_expanded_vf_a, LowerMass, UpperMass)
 setkey(MS1_2ID, Start, End)
 
-# Realizar el merge considerando los límites calculados
+# merge
 match_annotation_1 <- foverlaps(MS1_2ID, annotation_df_expanded_vf_a, 
                                 by.x = c("Start", "End"),
                                 by.y = c("LowerMass", "UpperMass"),
@@ -368,25 +392,9 @@ match_annotation_1 <- foverlaps(MS1_2ID, annotation_df_expanded_vf_a,
 
 match_annotation_1<- match_annotation_1[,-c("Start","End")]
 match_annotation_1 <- match_annotation_1[!is.na(match_annotation_1$PutativeAdduct), ]
-
-###################ADUCTES
-
-MetaboCoreUtils::adducts(polarity = c("positive","negative"))
-
-
-#####Database
-
-match_annotation_1 <- merge(annotation_df_expanded_v3, MS1_2ID, by.x = "NeutralMass", by.y="MonoisotopicMass")
-match_annotation_1 <- match_annotation_1[, c("MonoisotopicMass", "PutativeAdduct", "Level", 
-                                             "NeutralMass", "ILS", "EstimatedCarbonAtoms", 
-                                             "NormalizedProbability", colnames(MS1_2ID)[-which(colnames(MS1_2ID) == "MonoisotopicMass")])]
-
-
-match_annotation_2 <- merge(annotation_df_expanded_v3, Merge_LipidMaps_LipidBlast, by.x = "MonoisotopicMass", by.y="MASS")
-match_annotation_2 <- match_annotation_2[, c("MonoisotopicMass", "PutativeAdduct", "Level", 
-                                             "NeutralMass", "ILS", "EstimatedCarbonAtoms", 
-                                             "NormalizedProbability", colnames(Merge_LipidMaps_LipidBlast)[-which(colnames(Merge_LipidMaps_LipidBlast) == "MASS")])]
+match_annotation_1<-unique(match_annotation_1)
 
 
 write.csv(match_annotation_1, "C:/Users/nadia/OneDrive/Escritorio/PROVA_PACKAGE/anotacio_v1.csv")
+
 
