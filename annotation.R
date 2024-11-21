@@ -266,6 +266,10 @@ annotation_df_expanded_D <- annotation_df_expanded_D %>%
   select(-AdductName, -mass, -priority)
 
 
+#Remove rows with negative values in NeutralMass
+annotation_df_expanded_vf <- annotation_df_expanded_vf %>%
+  filter(NeutralMass >= 0)
+
 
 
 #Probabilities as score for filtering adducts
@@ -323,28 +327,47 @@ annotation_C_D <- annotation_C_D %>%
 
 #Normalization
 
-annotation_C_D <- annotation_C_D %>%
-  group_by(MonoisotopicMass) %>%
-  mutate(NormalizedProbability = Probability / sum(Probability, na.rm = TRUE)) %>%
-  ungroup()
+total_probability <- sum(annotation_C_D$Probability, na.rm = TRUE)
 
+annotation_C_D <- annotation_C_D %>%
+  mutate(NormalizedProbability = Probability / total_probability)
 
 # Combinar
 annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)
 
-#Remove rows with negative values in NeutralMass
-annotation_df_expanded_vf <- annotation_df_expanded_vf %>%
-  filter(NeutralMass >= 0)
+
 
 ##Anotar databases
 
 
+MS1_2ID <- read.csv("/home/nmolto/Desktop/rMSI2_Nadia/PubChemLite_31Oct2020.csv")
 
-db <- read.csv("/home/nmolto/Desktop/rMSI2_Nadia/PubChemLite_31Oct2020.csv")
+# Calcular los límites inferior y superior con un intervalo de ±1 ppm
+annotation_df_expanded_vf_a <- annotation_df_expanded_vf %>%
+  mutate(LowerMass = NeutralMass * (1- 5e-6),
+         UpperMass = NeutralMass * (1 + 5e-6))
 
-match_anotation <- anotation_df_expanded_v3 %>% filter(MonoisotopicMAss %in% db)
+# Convertir los dataframes a data.table
+setDT(annotation_df_expanded_vf_a)
+setDT(MS1_2ID)
+
+# Añadir columnas de inicio y fin en MS1_2ID para la coincidencia
+MS1_2ID[, `:=`(Start = MonoisotopicMass, End = MonoisotopicMass)]
+
+# Establecer claves para los data.tables
+setkey(annotation_df_expanded_vf_a, LowerMass, UpperMass)
+setkey(MS1_2ID, Start, End)
+
+# Realizar el merge considerando los límites calculados
+match_annotation_1 <- foverlaps(MS1_2ID, annotation_df_expanded_vf_a, 
+                                by.x = c("Start", "End"),
+                                by.y = c("LowerMass", "UpperMass"),
+                                type = "within")
+
+match_annotation_1<- match_annotation_1[,-c("Start","End")]
+match_annotation_1 <- match_annotation_1[!is.na(match_annotation_1$PutativeAdduct), ]
 
 ###################ADUCTES
 
