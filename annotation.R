@@ -274,7 +274,7 @@ annotation_df_expanded_D <- annotation_df_expanded_D %>%
 
 
 
-#Probabilities as score for filtering adducts
+#Probabilities as score for filtering adducts: first calculate the probability, then weight the probabilities and then normalize them
 
 
 #Filtering A, B:
@@ -296,10 +296,16 @@ get_density_value <- function(mass, density_model) {
 annotation_C_D <- annotation_df_expanded_D %>%
   filter(Level %in% c("C", "D"))
 
+#Frequency
+
+adduct_freq <- annotation_df_expanded_D %>%
+  group_by(PutativeAdduct) %>%
+  summarise(freq = n(), .groups = 'drop')
+
 # Probability for C, D:
 annotation_C_D <- annotation_C_D %>%
   rowwise() %>%
-  mutate(Probability = {
+  mutate(WeightedProbability = {
     adduct_name <- gsub("\\[M\\+", "", PutativeAdduct)
     adduct_name <- gsub("\\]", "", adduct_name)
     
@@ -323,21 +329,29 @@ annotation_C_D <- annotation_C_D %>%
     # probability
     prob <- get_density_value(NeutralMass, adduct_density[[1]])
     
-    prob
+    #weight
+    adduct_weight <- adduct_freq$freq[match(PutativeAdduct, adduct_freq$PutativeAdduct)]
+    weighted_prob <- prob * adduct_weight
+    weighted_prob
+    
   }) %>%
   ungroup()
 
 #Normalization
 
-total_probability <- sum(annotation_C_D$Probability, na.rm = TRUE)  # Suma de todas las probabilidades
+total_weighted_probability <- sum(annotation_C_D$WeightedProbability, na.rm = TRUE)  # All the probabilities weighted
 
 annotation_C_D <- annotation_C_D %>%
-  mutate(NormalizedProbability = Probability / total_probability)  # Normalizar por la suma total
+  mutate(NormalizedProbability = ifelse(is.na(WeightedProbability), NA, WeightedProbability / total_weighted_probability))   # Normalization of total addition
 
 # Combinar
 annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)   #OBJECTE FINAL
+
+
+
+
 
 
 ##density plot 
