@@ -105,15 +105,20 @@ annotation_df <- annotation_df[!duplicated(annotation_df), ] #As we are filterin
 
 
 #separate rows for each adduct and include the monoisotopic mass
+
+# Function to expand adducts
 expand_adducts <- function(df, adducts_C_df) {
   df_expanded <- do.call(rbind, lapply(seq_len(nrow(df)), function(i) {
     row <- df[i, ]
     if (row$Level %in% c("A", "B")) {
       adduct_pairs <- unlist(strsplit(as.character(row$Adducts), " & "))
       adduct_masses <- c(row$Adduct1Mass, row$Adduct2Mass)
+      adduct_indices <- c(row$Adduct1Index, row$Adduct2Index)
       expanded_rows <- lapply(seq_along(adduct_pairs), function(j) {
         new_row <- row
         new_row$PutativeAdduct <- adduct_pairs[j]
+        new_row$AdductMass <- adduct_masses[j]
+        new_row$AdductIndex <- adduct_indices[j]
         return(new_row)
       })
       return(do.call(rbind, expanded_rows))
@@ -121,6 +126,8 @@ expand_adducts <- function(df, adducts_C_df) {
       expanded_rows <- lapply(1:nrow(adducts_C_df), function(j) {
         new_row <- row
         new_row$PutativeAdduct <- paste0("[M", adducts_C_df$name[j], "]")
+        new_row$AdductMass <- NA
+        new_row$AdductIndex <- NA
         return(new_row)
       })
       return(do.call(rbind, expanded_rows))
@@ -129,32 +136,27 @@ expand_adducts <- function(df, adducts_C_df) {
   return(df_expanded)
 }
 
+# Expanding the dataframe
 annotation_df_expanded <- expand_adducts(annotation_df, adducts_C_df)
 annotation_df_expanded <- annotation_df_expanded[!duplicated(annotation_df_expanded), ]
 
-#Calculate the neutral mass for group C:
-
-# Extract adduct name
+# Calculate the neutral mass for level C
 annotation_df_expanded <- annotation_df_expanded %>%
-  mutate(AdductName = gsub("\\[M(\\+.*)\\]", "\\1", PutativeAdduct))
-
-# Join with adduct table
-annotation_df_expanded <- annotation_df_expanded %>%
-  left_join(adducts_C_df, by = c("AdductName" = "name"))
-
-# Calculate neutral mass
-annotation_df_expanded <- annotation_df_expanded %>%
-  mutate(NeutralMass = ifelse(Level == "C", MonoisotopicMass - mass, NeutralMass))
-
-# Remove columns
-annotation_df_expanded <- annotation_df_expanded %>%
+  mutate(AdductName = gsub("\\[M(\\+.*)\\]", "\\1", PutativeAdduct)) %>%
+  left_join(adducts_C_df, by = c("AdductName" = "name")) %>%
+  mutate(NeutralMass = ifelse(Level == "C", MonoisotopicMass - mass, NeutralMass)) %>%
   select(-AdductName, -mass, -priority)
 
-#Order columns
-column_order <- c("PutativeAdduct", "Level", setdiff(names(annotation_df_expanded), c("PutativeAdduct", "Level")))
-annotation_df_expanded <- annotation_df_expanded[, column_order]
+# Remove old columns Adduct1Mass, Adduct2Mass, Adduct1Index, Adduct2Index
+annotation_df_expanded <- annotation_df_expanded %>%
+  select(-Adduct1Mass, -Adduct2Mass, -Adduct1Index, -Adduct2Index)
 
-#Every mass in C level will be assessed considering all the adducts included in the initial element table
+# Order columns
+column_order <- c("PutativeAdduct", "Level", "AdductMass", "AdductIndex", setdiff(names(annotation_df_expanded), c("PutativeAdduct", "Level", "AdductMass", "AdductIndex")))
+annotation_df_expanded <- annotation_df_expanded[, column_order]
+annotation_df_expanded <- annotation_df_expanded %>%  rename(AdductPair = Adducts)
+
+#Every mass in C level will be assessed considerAdducts#Every mass in C level will be assessed considering all the adducts included in the initial element table
 #C level are M+0 excluded in A or B levels
 
 ##D level:
@@ -218,15 +220,17 @@ isotopes_df_format$scoretreshold<- ifelse(isotopes_df_format$mz_MN %in% isotopes
 
 all_masses <-rMSIprocPeakMatrix$mass
 
-isotopic_peaks_th<- rMSIprocPeakMatrix$mass[isotopes$isotopicPeaks]
+isotopic_peaks_th<- all_masses[isotopes$isotopicPeaks]
 
-monoisotopic_masses <- rMSIprocPeakMatrix$mass[isotopes$monoisotopicPeaks]
-masses_without_adducts <- all_masses[!all_masses %in% monoisotopic_masses]
-masses_without_adducts_isotopes<- masses_without_adducts[!masses_without_adducts %in% isotopic_peaks_th]
-masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes[!masses_without_adducts_isotopes%in% rMSIprocPeakMatrix$mass[aductes$B$Adduct1Index]] #removing group B mz
-masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes_b[!masses_without_adducts_isotopes_b%in% rMSIprocPeakMatrix$mass[aductes$B$Adduct2Index]]
+monoisotopic_masses <- all_masses[isotopes$monoisotopicPeaks]
+masses_without_adducts <- all_masses[!all_masses %in% monoisotopic_masses] #A, B and C groups
+masses_without_adducts_isotopes<- masses_without_adducts[!masses_without_adducts %in% isotopic_peaks_th] #Discarded in adduct annotation
+masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes[!masses_without_adducts_isotopes %in% all_masses[aductes$B$Adduct1Index]] #removing group B mz
+masses_without_adducts_isotopes_b<- masses_without_adducts_isotopes_b[!masses_without_adducts_isotopes_b%in% all_masses[aductes$B$Adduct2Index]]
+#as B group are monoisotopic peaks + some peak in peakmatrix, we remove both
 
 #Adding D group:
+# mz in pkm that have not been annotated yet (filtering previously: isotopes and monoisotopic peaks already annotated)
 
 all_columns <- names(annotation_df_expanded)
 new_annotations <- data.frame(matrix(ncol = length(all_columns), nrow = 0))
@@ -234,9 +238,12 @@ colnames(new_annotations) <- all_columns
 
 for (mass in masses_without_adducts_isotopes_b) {
   for (i in 1:nrow(adducts_C_df)) {
+    mono_index <- which(rMSIprocPeakMatrix$mass==mass)
+    
     new_row <- data.frame(
       Level = "D",
       MonoisotopicMass = mass,
+      MonoisotopicIndex = ifelse(length(mono_index) > 0, mono_index, NA),
       PutativeAdduct = paste0("[M", adducts_C_df$name[i], "]"),
       stringsAsFactors = FALSE
     )
@@ -349,9 +356,19 @@ annotation_df_expanded_vf <- annotation_df_expanded_D %>%
   filter(!Level %in% c("C", "D")) %>%
   bind_rows(annotation_C_D)   #OBJECTE FINAL
 
+annotation_df_expanded_vf <- annotation_df_expanded_vf %>%
+  select(1:4, MonoisotopicMass, everything())
 
 
+#Modify AdductMass <- MonoisotopicMass and AdductIndex <- MonoisotopicIndex
+annotation_df_expanded_vf$MonoisotopicMass[annotation_df_expanded_vf$Level %in% c("A", "B")] <- 
+annotation_df_expanded_vf$AdductMass[annotation_df_expanded_vf$Level %in% c("A", "B")]
+annotation_df_expanded_vf$MonoisotopicIndex[annotation_df_expanded_vf$Level %in% c("A", "B")] <- 
+annotation_df_expanded_vf$AdductIndex[annotation_df_expanded_vf$Level %in% c("A", "B")]
 
+#Reorganization
+annotation_df_expanded_vf <- annotation_df_expanded_vf[, !(names(annotation_df_expanded_vf) %in% c("AdductMass", "AdductIndex"))]
+annotation_df_expanded_vf <- annotation_df_expanded_vf %>% select(1:3, MonoisotopicIndex, everything())
 
 
 ##density plot 
@@ -407,8 +424,10 @@ match_annotation_1 <- foverlaps(MS1_2ID, annotation_df_expanded_vf_a,
 match_annotation_1<- match_annotation_1[,-c("Start","End")]
 match_annotation_1 <- match_annotation_1[!is.na(match_annotation_1$PutativeAdduct), ]
 match_annotation_1<-unique(match_annotation_1)
+match_annotation_1 <- match_annotation_1 %>%  select(-AdductPriority, -LowerMass, -UpperMass)
+
+# SPATIAL ANNOTATION
 
 
-write.csv(match_annotation_1, "C:/Users/nadia/OneDrive/Escritorio/PROVA_PACKAGE/anotacio_v1.csv")
 
 
