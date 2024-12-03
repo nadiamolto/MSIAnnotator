@@ -7,6 +7,8 @@ library(purrr)
 library(tidyr)
 library(ggplot2)
 
+
+
 if ((params$peakAnnotation$isotopeLikelihoodScoreThreshold > 1) || (params$peakAnnotation$isotopeLikelihoodScoreThreshold < 0))
 {
   stop("Error: isotopeLikelihoodScoreThreshold in the ProcParams object must be between 0 and 1")
@@ -40,8 +42,8 @@ if (!require("dplyr", character.only = TRUE, quietly=TRUE)) {
 
 #setup
 
-data_path<- ""
-rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"HCCA_DEA_pos_cerebellum.pkmat"))
+data_path<- "/home/nmolto/Desktop/datasets/toufik_dataset"
+rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"240430TM_DHB-ANI_LMWC_brain_GFM4_30um.pkmat"))
 
 #AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
 
@@ -426,8 +428,113 @@ match_annotation_1 <- match_annotation_1[!is.na(match_annotation_1$PutativeAdduc
 match_annotation_1<-unique(match_annotation_1)
 match_annotation_1 <- match_annotation_1 %>%  select(-AdductPriority, -LowerMass, -UpperMass)
 
+
+
+
 # SPATIAL ANNOTATION
 
+# 1. Filtering A and B levels since C and D have been assigned to all possible adducts included in the adduct table
+filtered_data <- match_annotation_1 %>% 
+  filter(Level %in% c("A", "B")) %>%  arrange(NeutralMass)
 
 
+#2. Setting a tolerance to group neutral masses according to a tolerance
 
+assign_mass_groups <- function(masses, tolerance) {
+  group <- 1
+  groups <- numeric(length(masses))
+  groups[1] <- group
+  
+  for (i in 2:length(masses)) {
+    if (abs(masses[i] - masses[i - 1]) <= tolerance) {
+      groups[i] <- group
+    } else {
+      group <- group + 1
+      groups[i] <- group
+    }
+  }
+  
+  return(groups)
+}
+
+filtered_data <- filtered_data %>%
+  arrange(NeutralMass) %>%
+  mutate(MassGroup = assign_mass_groups(NeutralMass, 0.001))
+
+#3. Filtering neutral masses
+neutral_masses_groups <- filtered_data %>%
+  group_by(MassGroup) %>%
+  nest()
+
+#4. Correlation
+# Intensities normalization
+normalizedintensities <- rMSIprocPeakMatrix$intensity / rMSIprocPeakMatrix$normalizations$TIC
+correlations_list <- list()
+
+# Function applied to each group
+for (group in 1:nrow(neutral_masses_groups)) {
+  # Index for each group
+  group_data <- neutral_masses_groups$data[[group]]
+  # Extract neutral mass
+  sorted_group_data <- group_data[order(group_data$Level), ]
+  neutral_mass <- sorted_group_data$NeutralMass[1]
+  # Group adducts (unique adduct)
+  adducts_in_group <- unique(group_data$PutativeAdduct)
+  intensities_by_adduct <- list()
+  for (adduct in adducts_in_group) {
+    # Filter for each UNIQUE adduct
+    adduct_data <- group_data %>% filter(PutativeAdduct == adduct) %>% slice_sample(n = 1)
+    # Extract intensities
+    intensity_values <- normalizedintensities[, adduct_data$MonoisotopicIndex]
+    # Intensities by adduct
+    intensities_by_adduct[[adduct]] <- intensity_values
+  }
+  # Correlation calculation
+  if (length(intensities_by_adduct) > 1) {
+    intensity_matrix <- do.call(cbind, intensities_by_adduct)
+    cor_matrix <- cor(intensity_matrix, use = "complete.obs")
+    # Name of neutral mass to each correlation matrix
+    correlations_list[[as.character(neutral_mass)]] <- cor_matrix
+  }
+}
+
+#Interpretation
+for (neutral_mass in names(correlation_matrices)){}
+correlation_matrices <- correlations_list
+  cor_matrix <- correlation_matrices$`189.04141`
+  pheatmap(cor_matrix, 
+           main = paste("Correlations for Neutral Mass:", "189.04141" ),
+           cluster_rows = TRUE, cluster_cols = TRUE,
+         color = colorRampPalette(c("blue", "white", "red"))(50))
+  
+  
+  
+### Tables with adducts and frequencies for each neutral mass
+  
+
+  generate_adducts_table <- function(neutral_masses_groups) {
+    adducts_tables_list <- list()
+    for (i in 1:nrow(neutral_masses_groups)) {
+      annotations_df <- neutral_masses_groups$data[[i]]
+      if ("PutativeAdduct" %in% colnames(annotations_df)) {
+        neutral_mass <- annotations_df$NeutralMass[1]
+        adducts <- annotations_df$PutativeAdduct
+        adducts_df <- data.frame(Adduct = adducts)
+        adducts_freq <- adducts_df %>%
+          group_by(Adduct) %>%
+          summarise(Frequency = n()) %>%
+          arrange(desc(Frequency))
+        adducts_tables_list[[as.character(neutral_mass)]] <- adducts_freq
+      } else {
+        warning(paste("La columna 'PutativeAdduct' no se encuentra en el tibble para el grupo:", neutral_masses_groups$MassGroup[i]))
+      }
+    }
+    return(adducts_tables_list)
+  }
+  adducts_tables_list <- generate_adducts_table(neutral_masses_groups)
+  for (neutral_mass in names(adducts_tables_list)) {
+    cat("\nAdduct table for neutral mass:", neutral_mass, "\n")
+    print(adducts_tables_list[[neutral_mass]])
+  }
+  
+  
