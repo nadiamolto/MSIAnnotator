@@ -43,7 +43,7 @@ if (!require("dplyr", character.only = TRUE, quietly=TRUE)) {
 #setup
 
 data_path<- "/home/nmolto/Desktop/datasets/toufik_dataset"
-rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"240430TM_DHB-ANI_LMWC_brain_GFM4_30um.pkmat"))
+rMSIprocPeakMatrix<- rMSI2::LoadPeakMatrix(file.path(data_path,"HCCA_DEA_pos_cerebellum.pkmat"))
 
 #AdductAnnotation <- function(rMSIPeacMatrix, AdductList, tolerance) {}
 
@@ -467,14 +467,21 @@ neutral_masses_groups <- filtered_data %>%
   nest()
 
 #4. Correlation
-# Intensities normalization
-normalizedintensities <- rMSIprocPeakMatrix$intensity / rMSIprocPeakMatrix$normalizations$TIC
+
+# Intensities 
+normalizedintensities <- rMSIprocPeakMatrix$intensity #/ rMSIprocPeakMatrix$normalizations$TIC
 correlations_list <- list()
 
 # Function applied to each group
 for (group in 1:nrow(neutral_masses_groups)) {
   # Index for each group
   group_data <- neutral_masses_groups$data[[group]]
+  
+  # Filter for levels A and B
+  group_data_filtered <- group_data %>% filter(Level %in% c("A", "B"))
+  # If there are no data points after filtering, skip this group
+  if (nrow(group_data_filtered) == 0) next
+  
   # Extract neutral mass
   sorted_group_data <- group_data[order(group_data$Level), ]
   neutral_mass <- sorted_group_data$NeutralMass[1]
@@ -498,15 +505,41 @@ for (group in 1:nrow(neutral_masses_groups)) {
   }
 }
 
-#Interpretation
-for (neutral_mass in names(correlation_matrices)){}
-correlation_matrices <- correlations_list
-  cor_matrix <- correlation_matrices$`189.04141`
-  pheatmap(cor_matrix, 
-           main = paste("Correlations for Neutral Mass:", "189.04141" ),
-           cluster_rows = TRUE, cluster_cols = TRUE,
-         color = colorRampPalette(c("blue", "white", "red"))(50))
-  
+
+#SNR
+
+nonnSNR <- rMSIprocPeakMatrix$SNR #/ rMSIprocPeakMatrix$normalizations$TIC
+correlations_list_2 <- list()
+
+# Function applied to each group
+for (group in 1:nrow(neutral_masses_groups)) {
+  # Index for each group
+  group_data <- neutral_masses_groups$data[[group]]
+  # Extract neutral mass
+  sorted_group_data <- group_data[order(group_data$Level), ]
+  neutral_mass <- sorted_group_data$NeutralMass[1]
+  # Group adducts (unique adduct)
+  adducts_in_group <- unique(group_data$PutativeAdduct)
+  SNR_by_adduct <- list()
+  for (adduct in adducts_in_group) {
+    # Filter for each UNIQUE adduct
+    adduct_data <- group_data %>% filter(PutativeAdduct == adduct) %>% slice_sample(n = 1)
+    # Extract intensities
+    SNR_values <- nonnSNR[, adduct_data$MonoisotopicIndex]
+    # Intensities by adduct
+    SNR_by_adduct[[adduct]] <- SNR_values
+  }
+  # Correlation calculation
+  if (length(SNR_by_adduct) > 1) {
+    SNR_matrix <- do.call(cbind, SNR_by_adduct)
+    cor_matrix_2 <- cor(SNR_matrix, use = "complete.obs")
+    # Name of neutral mass to each correlation matrix
+    correlations_list_2[[as.character(neutral_mass)]] <- cor_matrix_2
+  }
+}
+
+
+#GO TO SHINY APP
   
   
 ### Tables with adducts and frequencies for each neutral mass
@@ -536,5 +569,23 @@ correlation_matrices <- correlations_list
     cat("\nAdduct table for neutral mass:", neutral_mass, "\n")
     print(adducts_tables_list[[neutral_mass]])
   }
+
+#Filtering adducts
+  
+  neutral_mass_target <- 189.0422
+  tolerance <- 0.001
+  filtered_adducts <- match_annotation_1 %>%
+    filter(Level %in% c("A", "B") & 
+             NeutralMass >= (neutral_mass_target - tolerance) & 
+             NeutralMass <= (neutral_mass_target + tolerance)) %>%
+    select(PutativeAdduct, MonoisotopicMass, MonoisotopicIndex) %>% 
+    distinct()
+  
+  
+#Plotting ions of interest
+  
+  
+  
+ggplot(as.data.frame(rMSIprocPeakMatrix$pos), aes(x=x,y=y,fill=rMSIprocPeakMatrix$intensity[,140])) + geom_raster() +  scale_fill_viridis_c(option = "plasma") + labs(fill = "intensity", title="Intensity for mz=204") + theme_light()
   
   
